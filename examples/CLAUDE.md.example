@@ -1,13 +1,13 @@
-# Example: Builder Bot Scope Rules for CLAUDE.md
+# Example: Dispatch Agent Scope Rules for CLAUDE.md
 
 Add this section to your project's CLAUDE.md file. Adjust the paths
 to match your project structure.
 
 ---
 
-## Builder Bot Agent Scope
+## Dispatch Agent Scope
 
-When running as the Builder Bot automated agent (issues labelled `builder-bot`):
+When running as the Dispatch automated agent (issues labelled `dispatch`):
 
 ### Allowed
 - Create/edit files in: `src/app/`, `src/components/`, `src/hooks/`

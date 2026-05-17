@@ -1,7 +1,7 @@
-# Copy this file to .github/workflows/builder-bot.yml in your repo.
+# Copy this file to .github/workflows/dispatch.yml in your repo.
 # It MUST be on the default branch (usually main) for issue triggers to work.
 
-name: Builder Bot
+name: Dispatch
 
 on:
   issues:
@@ -9,12 +9,16 @@ on:
   issue_comment:
     types: [created]
 
+concurrency:
+  group: dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   build-feature:
     if: |
-      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'builder-bot')) ||
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'dispatch')) ||
       (github.event_name == 'issue_comment'
-        && contains(github.event.issue.labels.*.name, 'builder-bot')
+        && contains(github.event.issue.labels.*.name, 'dispatch')
         && !github.event.issue.pull_request
         && !endsWith(github.actor, '[bot]'))
     runs-on: ubuntu-latest
@@ -23,7 +27,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
     outputs:
       slack_channel: ${{ steps.meta.outputs.channel }}
       slack_thread_ts: ${{ steps.meta.outputs.thread_ts }}
@@ -36,7 +39,7 @@ jobs:
         with:
           script: |
             const body = (context.payload.issue.body || '').replace(/\r\n/g, '\n');
-            const match = body.match(/<!-- builder-bot-meta\nchannel: ([^\n]+)\nthread_ts: ([^\n]+)\nrequester: ([^\n]+)(?:\nbranch: ([^\n]+))?\n-->/);
+            const match = body.match(/<!-- dispatch-meta\nchannel: ([^\n]+)\nthread_ts: ([^\n]+)\nrequester: ([^\n]+)(?:\nbranch: ([^\n]+))?\n-->/);
             if (match) {
               core.setOutput('channel', match[1].trim());
               core.setOutput('thread_ts', match[2].trim());
@@ -79,11 +82,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           base_branch: ${{ steps.meta.outputs.branch }}
-          branch_prefix: "builder-bot/"
+          branch_prefix: "dispatch/"
           show_full_output: "true"
           prompt: |
-            You are BuilderBot, an automated feature builder. Read CLAUDE.md for full
-            project context, especially any "Builder Bot Scope" or agent scope section
+            You are Dispatch, an automated feature builder. Read CLAUDE.md for full
+            project context, especially any "Dispatch Agent Scope" or agent scope section
             for allowed/forbidden paths.
 
             Implement the feature described in issue #${{ github.event.issue.number }}.
@@ -98,7 +101,7 @@ jobs:
             6. If build or typecheck fails, fix and re-run
             7. Commit, push, and open a draft PR
 
-            PR title format: "[BuilderBot] <short description>"
+            PR title format: "[Dispatch] <short description>"
             PR body: describe what changed + "Closes #${{ github.event.issue.number }}"
 
             Do NOT run skills like fewer-permission-prompts or modify .claude/settings.json.
@@ -117,7 +120,7 @@ jobs:
         if: needs.build-feature.outputs.slack_channel != ''
         uses: actions/github-script@v7
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BUILDER_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_DISPATCH_TOKEN }}
         with:
           script: |
             const channel = '${{ needs.build-feature.outputs.slack_channel }}';
@@ -138,7 +141,7 @@ jobs:
               });
 
               pr = prs.data.find(p =>
-                p.head.ref.startsWith('builder-bot/') &&
+                p.head.ref.startsWith('dispatch/') &&
                 (p.body || '').includes(`#${issueNumber}`)
               );
 
@@ -153,7 +156,7 @@ jobs:
             }
 
             const text = [
-              '*BuilderBot* — PR ready for review',
+              '*Dispatch* — PR ready for review',
               `*<${pr.html_url}|${pr.title}>* — draft against \`${pr.base.ref}\`.`,
               '',
               `<@${requester}> — tag the team in this thread when you'd like a review.`,
@@ -182,7 +185,7 @@ jobs:
         if: needs.build-feature.outputs.slack_channel != ''
         uses: actions/github-script@v7
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BUILDER_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_DISPATCH_TOKEN }}
         with:
           script: |
             const channel = '${{ needs.build-feature.outputs.slack_channel }}';
@@ -190,7 +193,7 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const text = [
-              '*BuilderBot* — couldn\'t complete this one',
+              '*Dispatch* — couldn\'t complete this one',
               `Build errors after multiple attempts. <${runUrl}|See logs>.`,
               '',
               'Tag the team in this thread — this might need manual implementation.',
