@@ -1,117 +1,110 @@
-# Slack Builder Bot
+# dispatch
 
-A Slack bot that lets non-technical team members request small features by posting in a dedicated channel. The bot classifies the request, creates a GitHub Issue, and triggers a Claude Code agent (via GitHub Actions) that autonomously implements the change and opens a draft PR for human review.
+A Slack-to-PR coding agent. Non-technical users describe features in Slack — Claude Code implements them autonomously and opens draft PRs for review.
 
-```
-Slack #build-requests
-  │ @BuilderBot "add a CSV export to the dashboard"
-  ▼
-Your Next.js app (Slack event handler)
-  │ 1. Channel gate: only #build-requests
-  │ 2. Haiku classifier → ALLOW / REJECT / NEEDS_HUMAN
-  │ 3. If ALLOW → create GitHub Issue (label: builder-bot)
-  ▼
-GitHub Actions (builder-bot.yml)
-  │ triggers on: issues [opened] with builder-bot label
-  │ runs: anthropics/claude-code-action@v1
-  │   - reads your CLAUDE.md for codebase context
-  │   - Sonnet 4.6, 40 turns, bypassPermissions
-  │   - builds, lints, typechecks
-  │   - opens draft PR
-  │   - posts PR link back to Slack thread
-  ▼
-You review the PR and merge
-```
-
-## What's included
+## Architecture
 
 ```
-├── README.md                          # This file
-├── SETUP.md                           # Step-by-step setup guide
-├── LEARNINGS.md                       # Hard-won debugging lessons
-├── src/
-│   └── lib/
-│       └── slack/
-│           └── builder-bot.ts         # Core handler (drop into your Next.js app)
-├── workflows/
-│   └── builder-bot.yml                # GitHub Actions workflow (copy to .github/workflows/)
-├── examples/
-│   ├── CLAUDE.md.example              # Example scope rules section
-│   └── events-route.example.ts        # Example Slack events route integration
-└── docs/
-    └── architecture.md                # Detailed architecture doc
+Slack #build-requests          Your App (Next.js)              GitHub Actions
+─────────────────────          ──────────────────              ──────────────
+
+@dispatch "add CSV               ┌─────────────┐
+ export to dashboard"  ────────▶ │ Haiku 4.5    │
+                                 │ classifier   │
+                                 │              │
+                                 │ ALLOW ───────┼──▶ Create Issue ──▶ claude-code-action
+                                 │ REJECT ──────┼──▶ Reply: "needs       │
+                                 │ NEEDS_HUMAN ─┼──▶  manual impl"       │
+                                 └─────────────┘                         │
+                                                                         ▼
+                                                                    Sonnet 4.6
+                                                                    reads CLAUDE.md
+                                                                    implements feature
+                                                                    runs build/lint/typecheck
+                                                                    opens draft PR
+                                                                         │
+  PR link posted ◀──────────────────────────────────────────────────────┘
+  to Slack thread
 ```
-
-## Quick Start
-
-1. **Create a Slack app** → 4 scopes, 1 event subscription
-2. **Copy `builder-bot.ts`** into your Next.js app
-3. **Wire it** into your Slack events route
-4. **Copy `builder-bot.yml`** to `.github/workflows/`
-5. **Add scope rules** to your `CLAUDE.md`
-6. **Set env vars** on your hosting platform + GitHub Actions secrets
-
-Full walkthrough in [SETUP.md](SETUP.md).
 
 ## How it works
 
-### 1. Slack Event Handler (`builder-bot.ts`)
+1. Someone posts `@dispatch add a date filter to the CSV export` in a dedicated Slack channel
+2. A Haiku classifier ($0.002/call) determines if the request is in scope — UI changes and small features pass, infrastructure changes get rejected
+3. If allowed, a GitHub Issue is created with the request + any attached screenshots
+4. A GitHub Actions workflow triggers Claude Code (Sonnet 4.6), which reads your `CLAUDE.md` scope rules, implements the feature, verifies the build passes, and opens a draft PR
+5. The PR link is posted back to the Slack thread. A human reviews and merges.
 
-When someone `@BuilderBot` in `#build-requests`:
+Follow-up messages in the thread (with `@dispatch`) are appended as issue comments — the agent picks up additional context if it's still running.
 
-- **Channel gate** — ignores mentions outside the designated channel
-- **Haiku classifier** — calls Claude Haiku 4.5 (~$0.002/call) to classify as:
-  - `ALLOW` — UI changes, data display, exports, styling, etc.
-  - `REJECT` — database schema, auth, scoring engines, etc.
-  - `NEEDS_HUMAN` — ambiguous or complex scope
-- **Issue creation** — creates a GitHub Issue with metadata embedded as an HTML comment
-- **Thread replies** — follow-up `@BuilderBot` messages in the same thread get appended as issue comments
-- **Screenshots** — attached images are uploaded to GitHub and embedded in the issue body
+## What's in this repo
 
-### 2. GitHub Actions Workflow (`builder-bot.yml`)
+```
+src/lib/slack/builder-bot.ts      Core handler — Haiku classifier, GitHub API, Slack thread tracking
+workflows/builder-bot.yml         GitHub Actions workflow — claude-code-action + Slack notifications
+examples/
+  events-route.example.ts         How to wire into your Next.js Slack events route
+  CLAUDE.md.example               Template scope rules (allowed/forbidden paths)
+docs/architecture.md              Detailed architecture and data flow
+SETUP.md                          Step-by-step setup (Slack app, env vars, GitHub secrets)
+LEARNINGS.md                      Production debugging lessons (read this before modifying anything)
+```
 
-When an issue with `builder-bot` label is created:
+## Setup
 
-- Checks out the target branch (configurable via `[branch:xxx]` in the Slack message)
-- Installs dependencies
-- Runs `claude-code-action@v1` with `--permission-mode bypassPermissions`
-- Agent reads `CLAUDE.md`, implements the feature, runs build/lint/typecheck
-- Opens a draft PR
-- Posts the PR link back to the Slack thread (with retry for race conditions)
-- On failure, posts a "couldn't complete this one" message
+Full walkthrough in [SETUP.md](SETUP.md). The short version:
 
-### 3. Scope Rules (CLAUDE.md)
+1. Create a Slack app with 4 scopes (`app_mentions:read`, `channels:history`, `chat:write`, `files:read`)
+2. Drop `builder-bot.ts` into your Next.js app, wire into your Slack events route
+3. Copy `builder-bot.yml` to `.github/workflows/` on your default branch
+4. Add scope rules to your `CLAUDE.md`
+5. Set env vars (Slack token, GitHub PAT, Anthropic key, channel ID)
+6. Create a `#build-requests` channel, invite the bot, post a request
 
-You define allowed/forbidden paths in your `CLAUDE.md`. The agent reads these before making any changes. This is the primary safety mechanism — the agent respects these rules behaviorally.
+## Scope and safety
+
+The agent runs with `--permission-mode bypassPermissions` inside a GitHub Actions sandbox. Safety comes from four layers, not tool-level restrictions:
+
+- **CLAUDE.md scope rules** — you define allowed/forbidden paths; the agent reads and follows them
+- **Branch isolation** — agent pushes to `builder-bot/*` branches only
+- **Draft PRs** — nothing auto-merges; a human reviews every change
+- **Haiku pre-filter** — infrastructure-touching requests never reach the agent
+
+## What it handles well
+
+Simple, focused UI work with clear scope:
+
+- Add a loading spinner, empty state, or toast notification
+- Add CSV/PDF export to an existing page
+- Add filters, sorting, or search to a table
+- Display new data from existing API endpoints
+- Styling changes, layout adjustments
+
+## What it doesn't
+
+Complex multi-file features, drag-and-drop interactions, anything touching auth or database schema, or requests that need more than ~30 turns of agent reasoning. The classifier routes these to a human.
 
 ## Cost
 
-| Component | Per-request | Monthly (20 req/week) |
-|-----------|-------------|----------------------|
-| Haiku classifier | ~$0.002 | ~$0.16 |
-| Sonnet coding pass | $0.30–1.50 | $24–120 |
-| GitHub Actions | ~5 min | ~400 min (free tier: 2,000) |
+~$0.30–1.50 per feature in API tokens (Sonnet for coding, Haiku for classification). GitHub Actions minutes are within the free tier for typical usage. At 20 requests/week, expect $30–120/month.
 
-## What works well
+## Branch targeting
 
-- "Add a loading spinner to the dashboard" — 15 turns, ~$0.30
-- "Add a CSV export button to the users table" — 20 turns, ~$0.50
-- "Show a welcome message on empty state" — 15 turns, ~$0.40
-- "Add a date range filter to the report page" — 25 turns, ~$0.80
+Default target is `main`. Override per-request:
 
-## What doesn't work well
+```
+@dispatch [branch:develop] add a welcome message to the empty state
+```
 
-- Complex drag-and-drop interactions — too many turns
-- Multi-file refactors touching 10+ files — exceeds turn limit
-- Features requiring new API endpoints that write data — classifier should reject these
-- Anything touching files over 1000 lines — agent spends too many turns reading
+## Production learnings
+
+[LEARNINGS.md](LEARNINGS.md) documents every gotcha encountered shipping this in production — permission model pitfalls, GitHub Actions trigger semantics, Haiku response parsing, race conditions, and turn budget management. Read it before modifying the workflow or handler.
 
 ## Requirements
 
 - Next.js app with a Slack Events API endpoint
 - GitHub repo with `CLAUDE.md`
-- Anthropic API key (Haiku for classifier, Sonnet for coding)
-- Slack workspace with a bot app
+- Anthropic API key (Haiku + Sonnet)
 
 ## License
 
