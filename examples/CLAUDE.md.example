@@ -1,0 +1,33 @@
+# Example: Builder Bot Scope Rules for CLAUDE.md
+
+Add this section to your project's CLAUDE.md file. Adjust the paths
+to match your project structure.
+
+---
+
+## Builder Bot Agent Scope
+
+When running as the Builder Bot automated agent (issues labelled `builder-bot`):
+
+### Allowed
+- Create/edit files in: `src/app/`, `src/components/`, `src/hooks/`
+- Add new UI components following existing patterns
+- Add columns, filters, sorting, search to existing tables and displays
+- Add CSV/PDF/JSON export features that read from existing API routes
+- Create new read-only API routes (GET only) in `src/app/api/`
+- Modify styles, layouts, pages, loading states, empty states
+
+### Forbidden
+- `src/lib/auth/` — authentication logic
+- `src/lib/db/` — database schema and migrations
+- `src/lib/api/` — core API integrations
+- `.env`, `.env.example` — environment variables
+- `package.json` — do not add or remove dependencies
+- `scripts/` — operational and deployment scripts
+- Any API route that writes to the database (POST/PATCH/DELETE)
+
+### Verification
+Run all before opening a PR:
+- `npm run build`
+- `npm run lint`
+- `npm run typecheck`

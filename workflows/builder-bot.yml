@@ -1,0 +1,211 @@
+# Copy this file to .github/workflows/builder-bot.yml in your repo.
+# It MUST be on the default branch (usually main) for issue triggers to work.
+
+name: Builder Bot
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  build-feature:
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'builder-bot')) ||
+      (github.event_name == 'issue_comment'
+        && contains(github.event.issue.labels.*.name, 'builder-bot')
+        && !github.event.issue.pull_request
+        && !endsWith(github.actor, '[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    outputs:
+      slack_channel: ${{ steps.meta.outputs.channel }}
+      slack_thread_ts: ${{ steps.meta.outputs.thread_ts }}
+      slack_requester: ${{ steps.meta.outputs.requester }}
+
+    steps:
+      - name: Extract Slack metadata from issue body
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = (context.payload.issue.body || '').replace(/\r\n/g, '\n');
+            const match = body.match(/<!-- builder-bot-meta\nchannel: ([^\n]+)\nthread_ts: ([^\n]+)\nrequester: ([^\n]+)(?:\nbranch: ([^\n]+))?\n-->/);
+            if (match) {
+              core.setOutput('channel', match[1].trim());
+              core.setOutput('thread_ts', match[2].trim());
+              core.setOutput('requester', match[3].trim());
+              core.setOutput('branch', (match[4] || 'main').trim());
+            } else {
+              core.setOutput('channel', '');
+              core.setOutput('thread_ts', '');
+              core.setOutput('requester', '');
+              core.setOutput('branch', 'main');
+            }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache node_modules
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # If your build requires env vars that throw at module load time,
+      # add them here as dummy values. Example:
+      # env:
+      #   SLACK_BOT_TOKEN: xoxb-ci-placeholder
+      #   DATABASE_URL: postgres://localhost:5432/dummy
+      - uses: anthropics/claude-code-action@v1
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          base_branch: ${{ steps.meta.outputs.branch }}
+          branch_prefix: "builder-bot/"
+          show_full_output: "true"
+          prompt: |
+            You are BuilderBot, an automated feature builder. Read CLAUDE.md for full
+            project context, especially any "Builder Bot Scope" or agent scope section
+            for allowed/forbidden paths.
+
+            Implement the feature described in issue #${{ github.event.issue.number }}.
+            The issue body is already in your context — do NOT fetch it via gh or curl.
+
+            Steps:
+            1. Read the issue to understand the request
+            2. Explore the relevant codebase files
+            3. Implement the feature
+            4. Run: npm run lint:fix (auto-fixes formatting) if available, otherwise npm run lint
+            5. Run: npm run build && npm run typecheck
+            6. If build or typecheck fails, fix and re-run
+            7. Commit, push, and open a draft PR
+
+            PR title format: "[BuilderBot] <short description>"
+            PR body: describe what changed + "Closes #${{ github.event.issue.number }}"
+
+            Do NOT run skills like fewer-permission-prompts or modify .claude/settings.json.
+            Do NOT over-engineer. Keep changes minimal and focused.
+            Do NOT manually fix linter formatting — use the auto-fix command instead.
+          claude_args: "--model claude-sonnet-4-6 --max-turns 40 --permission-mode bypassPermissions"
+
+  notify-success:
+    needs: build-feature
+    if: success()
+    permissions:
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find PR and post to Slack
+        if: needs.build-feature.outputs.slack_channel != ''
+        uses: actions/github-script@v7
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BUILDER_BOT_TOKEN }}
+        with:
+          script: |
+            const channel = '${{ needs.build-feature.outputs.slack_channel }}';
+            const threadTs = '${{ needs.build-feature.outputs.slack_thread_ts }}';
+            const requester = '${{ needs.build-feature.outputs.slack_requester }}';
+            const issueNumber = ${{ github.event.issue.number }};
+
+            // Find the PR — retry with delay for race condition
+            let pr = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              const prs = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                sort: 'created',
+                direction: 'desc',
+                per_page: 20,
+              });
+
+              pr = prs.data.find(p =>
+                p.head.ref.startsWith('builder-bot/') &&
+                (p.body || '').includes(`#${issueNumber}`)
+              );
+
+              if (pr) break;
+              console.log(`No matching PR found (attempt ${attempt + 1}/5), waiting 10s...`);
+              await new Promise(r => setTimeout(r, 10000));
+            }
+
+            if (!pr) {
+              console.log('No matching PR found for issue', issueNumber, 'after 5 attempts');
+              return;
+            }
+
+            const text = [
+              '*BuilderBot* — PR ready for review',
+              `*<${pr.html_url}|${pr.title}>* — draft against \`${pr.base.ref}\`.`,
+              '',
+              `<@${requester}> — tag the team in this thread when you'd like a review.`,
+            ].join('\n');
+
+            const res = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ channel, thread_ts: threadTs, text }),
+            });
+
+            const slackRes = await res.json();
+            if (!slackRes.ok) {
+              core.warning(`Slack success notification failed: ${slackRes.error}`);
+            }
+
+  notify-failure:
+    needs: build-feature
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post failure to Slack
+        if: needs.build-feature.outputs.slack_channel != ''
+        uses: actions/github-script@v7
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BUILDER_BOT_TOKEN }}
+        with:
+          script: |
+            const channel = '${{ needs.build-feature.outputs.slack_channel }}';
+            const threadTs = '${{ needs.build-feature.outputs.slack_thread_ts }}';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const text = [
+              '*BuilderBot* — couldn\'t complete this one',
+              `Build errors after multiple attempts. <${runUrl}|See logs>.`,
+              '',
+              'Tag the team in this thread — this might need manual implementation.',
+            ].join('\n');
+
+            const res = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ channel, thread_ts: threadTs, text }),
+            });
+
+            const slackRes = await res.json();
+            if (!slackRes.ok) {
+              core.warning(`Slack failure notification failed: ${slackRes.error}`);
+            }
