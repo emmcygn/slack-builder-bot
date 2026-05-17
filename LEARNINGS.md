@@ -16,7 +16,7 @@ We then tried `settings.permissions.allow` with a JSON block — the permission 
 
 **The solution:** `--permission-mode bypassPermissions` in `claude_args`. Safety comes from:
 - CLAUDE.md scope rules (behavioral — the agent reads and follows them)
-- Branch prefix isolation (agent can only push to `builder-bot/` branches)
+- Branch prefix isolation (agent can only push to `dispatch/` branches)
 - Draft PRs (nothing auto-merges — human reviews every change)
 - GitHub Actions sandbox (isolated runner, no access to production)
 
@@ -58,7 +58,7 @@ const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
 
 ### 529 Overloaded errors
 
-Haiku returns 529 when at capacity. Retry 3x with 2s backoff. The error is transient — second attempt usually succeeds.
+Haiku returns 529 when at capacity. Retry 3x with 2s backoff (configurable via `maxClassifierRetries`). The error is transient — second attempt usually succeeds.
 
 ### Prompt injection
 
@@ -66,7 +66,7 @@ Put classifier instructions in the `system` parameter, not the `user` message. A
 
 ### Sanitize user input in issue body
 
-Users could inject `<!-- builder-bot-meta -->` HTML comments to redirect Slack notifications. Strip all HTML comments from user messages before embedding in the issue body:
+Users could inject `<!-- dispatch-meta -->` HTML comments to redirect Slack notifications. Strip all HTML comments from user messages before embedding in the issue body:
 ```typescript
 text.replace(/<!--[\s\S]*?-->/g, '')
 ```
@@ -83,7 +83,7 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 ```
 
-Check your CI workflow for env vars it already sets — the builder bot workflow needs the same ones.
+Check your CI workflow for env vars it already sets — the dispatch workflow needs the same ones.
 
 ### `npm run lint:fix` saves turns
 
@@ -93,7 +93,7 @@ Tell the agent to run `lint:fix` instead of checking lint and manually fixing. A
 
 ### Separate bot from existing apps
 
-Create a new Slack app for the builder bot. Don't share the bot token with your existing app — different scopes, different signing secrets, clean separation.
+Create a new Slack app for dispatch. Don't share the bot token with your existing app — different scopes, different signing secrets, clean separation.
 
 ### Dual signing secrets
 
@@ -101,7 +101,7 @@ If sharing an events endpoint between multiple bots, verify against both signing
 ```typescript
 const SIGNING_SECRETS = [
   process.env.SLACK_SIGNING_SECRET || '',
-  process.env.SLACK_BUILDER_BOT_SIGNING_SECRET || '',
+  process.env.SLACK_DISPATCH_SIGNING_SECRET || '',
 ].filter(Boolean);
 
 const valid = SIGNING_SECRETS.some(secret => checkSignature(secret, ...));
@@ -127,7 +127,7 @@ for (let attempt = 0; attempt < 5; attempt++) {
 
 ### GitHub API `head` filter requires exact match
 
-`pulls.list({ head: 'org:builder-bot/' })` doesn't work as a prefix match. Search without the `head` filter and match by branch prefix in JavaScript.
+`pulls.list({ head: 'org:dispatch/' })` doesn't work as a prefix match. Search without the `head` filter and match by branch prefix in JavaScript.
 
 ## Complexity Limits
 

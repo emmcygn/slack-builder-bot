@@ -1,0 +1,16 @@
+{
+  "name": "dispatch",
+  "version": "0.1.0",
+  "description": "Slack-to-PR coding agent. Non-technical users describe features in Slack — Claude Code implements them and opens draft PRs.",
+  "license": "MIT",
+  "author": "Emmanuel Cuyugan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emmcygn/dispatch.git"
+  },
+  "keywords": ["slack", "claude", "ai-agent", "coding-agent", "pull-request", "automation"],
+  "peerDependencies": {
+    "@slack/web-api": ">=7.0.0",
+    "@anthropic-ai/sdk": ">=0.30.0"
+  }
+}
